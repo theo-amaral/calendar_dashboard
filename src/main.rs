@@ -136,6 +136,7 @@ async fn do_call() {
 
     let tasks_strings = fetch_tasks(&token).await;
 
+    // change your name here
     let greeting = if Local::now().hour() < 12 {
         "Bom dia, Theo."
     } else if Local::now().hour() > 18 {

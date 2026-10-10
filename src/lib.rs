@@ -5,18 +5,30 @@ use google_calendar::types::{CalendarListEntry, Event, MinAccessRole, OrderBy};
 use log::debug;
 use reqwest;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process;
 use termion::terminal_size;
 use unicode_width::UnicodeWidthStr;
 
-const TOKEN_PATH: &str = "/home/theo/.config/calendar_dashboard/tokens.json";
-const CREDENTIALS_PATH: &str = "/home/theo/.config/calendar_dashboard/client_secret.json";
 const PORT: u16 = 8888;
+
+fn config_dir() -> PathBuf {
+    let home = env::var("HOME").expect("variável HOME não definida");
+    PathBuf::from(home).join(".config/calendar_dashboard")
+}
+
+fn token_path() -> PathBuf {
+    config_dir().join("tokens.json")
+}
+
+fn credentials_path() -> PathBuf {
+    config_dir().join("client_secret.json")
+}
 
 #[allow(dead_code)]
 #[derive(Deserialize)]
@@ -50,13 +62,13 @@ pub struct GoogleTask {
 }
 
 fn load_tokens() -> Result<StoredToken, io::Error> {
-    if !Path::new(TOKEN_PATH).exists() {
+    if !token_path().exists() {
         Err(io::Error::new(
             io::ErrorKind::NotFound,
             "Arquivo não existe",
         ))
     } else {
-        let data = fs::read_to_string(TOKEN_PATH)?;
+        let data = fs::read_to_string(token_path())?;
         let tokens = serde_json::from_str(&data)?;
         Ok(tokens)
     }
@@ -64,7 +76,7 @@ fn load_tokens() -> Result<StoredToken, io::Error> {
 
 fn store_tokens(tokens: &StoredToken) {
     let data = serde_json::to_string_pretty(tokens);
-    fs::write(TOKEN_PATH, data.unwrap()).unwrap();
+    fs::write(token_path(), data.unwrap()).unwrap();
 }
 
 async fn perform_initial_login(client: &mut Client) -> StoredToken {
@@ -136,7 +148,7 @@ async fn perform_initial_login(client: &mut Client) -> StoredToken {
 
 pub async fn create_client() -> (Client, String) {
     debug!("Creating client...");
-    let data = fs::read_to_string(CREDENTIALS_PATH).unwrap();
+    let data = fs::read_to_string(credentials_path()).unwrap();
     let client_infos: ClientSecret = serde_json::from_str(&data).unwrap();
 
     let redirect_uri = format!("http://127.0.0.1:{}", PORT);
