@@ -3,6 +3,7 @@ use colored::{Color, Colorize};
 use google_calendar::Client;
 use google_calendar::types::{CalendarListEntry, Event, MinAccessRole, OrderBy};
 use log::debug;
+use reqwest;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
@@ -17,6 +18,7 @@ const TOKEN_PATH: &str = "/home/theo/.config/calendar_dashboard/tokens.json";
 const CREDENTIALS_PATH: &str = "/home/theo/.config/calendar_dashboard/client_secret.json";
 const PORT: u16 = 8888;
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct Installed {
     client_id: String,
@@ -72,7 +74,7 @@ async fn perform_initial_login(client: &mut Client) -> StoredToken {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", PORT)).unwrap();
 
     let auth_url = client.user_consent_url(&[
-        String::from("https://www.googleapis.com/auth/calendar"),
+        String::from("https://www.googleapis.com/auth/calendar.readonly"),
         String::from("https://www.googleapis.com/auth/tasks.readonly"),
     ]);
 
@@ -89,19 +91,19 @@ async fn perform_initial_login(client: &mut Client) -> StoredToken {
         let mut request_line = String::new();
 
         if reader.read_line(&mut request_line).is_ok() {
-            if let Some(path_start) = request_line.find("GET /")
-                && let Some(path_end) = request_line[path_start..].find(" HTTP/")
-            {
-                let path = &request_line[path_start + 4..path_start + path_end];
-                let full_url = format!("{}{}", redirect_uri, path);
+            if let Some(path_start) = request_line.find("GET /") {
+                if let Some(path_end) = request_line[path_start..].find(" HTTP/") {
+                    let path = &request_line[path_start + 4..path_start + path_end];
+                    let full_url = format!("{}{}", redirect_uri, path);
 
-                if let Ok(parsed) = url::Url::parse(&full_url)
-                    && let Some(c) = parsed.query_pairs().find(|(k, _)| k == "code")
-                {
-                    code = c.1.to_string();
+                    if let Ok(parsed) = url::Url::parse(&full_url) {
+                        if let Some(c) = parsed.query_pairs().find(|(k, _)| k == "code") {
+                            code = c.1.to_string();
 
-                    let msg = "HTTP/1.1 200 OK\r\n\r\n<html><body style='background:#222;color:#dfd;text-align:center;padding:50px;font-family:sans-serif;'><h1>Sucesso!</h1><p>Pode fechar esta janela.</p><script>window.close()</script></body></html>";
-                    stream.write_all(msg.as_bytes()).ok();
+                            let msg = "HTTP/1.1 200 OK\r\n\r\n<html><body style='background:#222;color:#dfd;text-align:center;padding:50px;font-family:sans-serif;'><h1>Sucesso!</h1><p>Pode fechar esta janela.</p><script>window.close()</script></body></html>";
+                            stream.write_all(msg.as_bytes()).ok();
+                        }
+                    }
                 }
             }
         }
@@ -241,11 +243,19 @@ pub async fn fetch_tasks(token: &str) -> Vec<String> {
     debug!("Fetching tasks...");
     let client = reqwest::Client::new();
 
-    // 1. Passamos os parâmetros direto na string da URL
-    let url = "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks?showCompleted=false&maxResults=10";
+    let due_max = chrono::Utc::now()
+        .checked_add_days(chrono::Days::new(3))
+        .unwrap()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+
+    let url = format!(
+        "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks?showCompleted=false&dueMax={}",
+        due_max
+    );
 
     let res = client
-        .get(url) // Sem usar o .query()
+        .get(&url)
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await;
@@ -253,9 +263,7 @@ pub async fn fetch_tasks(token: &str) -> Vec<String> {
     match res {
         Ok(response) => {
             if response.status().is_success() {
-                // 2. Lemos o texto puro da requisição
                 if let Ok(text) = response.text().await {
-                    // 3. Convertendo com serde_json explicitamente
                     if let Ok(task_list) = serde_json::from_str::<TaskListResponse>(&text) {
                         let tasks = task_list.items.unwrap_or_default();
                         debug!("Fetched {} tasks!", tasks.len());
@@ -287,7 +295,7 @@ pub fn draw_box_title(title: &str) {
 pub fn draw_box_first_line(events: Vec<String>) {
     let (w, _) = terminal_size().unwrap();
     let w = w as usize;
-    let title = "    Eventos nas próximas 24h: ";
+    let title = "    Eventos de hoje: ";
     let base_width = 5 + title.chars().count();
     let display_quantity = events
         .iter()
@@ -302,30 +310,25 @@ pub fn draw_box_first_line(events: Vec<String>) {
     line.push('│');
     line.push_str(title);
 
+    // Ajuste de cores para o azul-petróleo (Teal/Dark Cyan) do print original:
+    // Texto em branco-gelo e fundo azul-petróleo escuro
+    let text_color = Color::TrueColor {
+        r: 228,
+        g: 253,
+        b: 225,
+    };
+    let bg_color = Color::TrueColor {
+        r: 2,
+        g: 120,
+        b: 135,
+    }; // <--- Azul-petróleo mais saturado do print
+
     if events.is_empty() {
         line.push_str(&format!(
             "{}{}{}",
-            "".color(Color::TrueColor {
-                r: 2,
-                g: 128,
-                b: 144
-            }),
-            " Sem eventos hoje! "
-                .color(Color::TrueColor {
-                    r: 228,
-                    g: 253,
-                    b: 225
-                })
-                .on_color(Color::TrueColor {
-                    r: 2,
-                    g: 128,
-                    b: 144
-                }),
-            "".color(Color::TrueColor {
-                r: 2,
-                g: 128,
-                b: 144
-            }),
+            "".color(bg_color),
+            " Sem eventos hoje! ".color(text_color).on_color(bg_color),
+            "".color(bg_color),
         ));
     } else {
         for event in events.iter().take(display_quantity) {
@@ -359,7 +362,7 @@ pub fn draw_box_first_line(events: Vec<String>) {
 pub fn draw_box_second_line(tasks: Vec<String>) {
     let (w, _) = terminal_size().unwrap();
     let w = w as usize;
-    let title = "    Tarefas Pendentes: ";
+    let title = "    Tarefas dos próximos 3 dias: ";
     let base_width = 5 + title.chars().count();
     let display_quantity = tasks
         .iter()
@@ -374,22 +377,24 @@ pub fn draw_box_second_line(tasks: Vec<String>) {
     line.push('│');
     line.push_str(title);
 
+    // Ajuste de cores para o tom de Amarelo-Amendoado/Oliva-Claro do print original:
+    // Texto em cinza-escuro/azul-marinho e fundo amarelado claro
     let text_color = Color::TrueColor {
-        r: 50,
-        g: 30,
-        b: 10,
-    };
+        r: 26,
+        g: 36,
+        b: 43,
+    }; // <--- Texto escuro para dar contraste
     let bg_color = Color::TrueColor {
-        r: 255,
-        g: 180,
-        b: 80,
-    };
+        r: 224,
+        g: 224,
+        b: 146,
+    }; // <--- Amarelo pastel desbotado
 
     if tasks.is_empty() {
         line.push_str(&format!(
             "{}{}{}",
             "".color(bg_color),
-            " Tudo feito! ".color(text_color).on_color(bg_color),
+            " Sem tarefas! ".color(text_color).on_color(bg_color),
             "".color(bg_color),
         ));
     } else {
